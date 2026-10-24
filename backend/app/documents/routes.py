@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from ..audit.service import record_audit_event
@@ -153,13 +153,27 @@ async def upload_document(
 
 
 @router.get("")
+
+@router.get("")
 def list_documents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    documents = db.scalars(
-        select(Document)
-        .where(Document.owner_id == current_user.id)
+    documents = db.execute(
+        select(Document, DocumentPermission)
+        .outerjoin(
+            DocumentPermission,
+            and_(
+                DocumentPermission.document_id == Document.id,
+                DocumentPermission.user_id == current_user.id,
+            ),
+        )
+        .where(
+            or_(
+                Document.owner_id == current_user.id,
+                DocumentPermission.user_id == current_user.id,
+            )
+        )
         .order_by(Document.created_at.desc())
     ).all()
 
@@ -171,9 +185,79 @@ def list_documents(
             "size_bytes": doc.size_bytes,
             "owner_id": doc.owner_id,
             "created_at": doc.created_at,
+            "access": (
+                "owner"
+                if doc.owner_id == current_user.id
+                else "shared"
+            ),
+            "can_read": True,
+            "can_edit": (
+                True
+                if doc.owner_id == current_user.id
+                else permission.can_edit
+            ),
         }
-        for doc in documents
+        for doc, permission in documents
     ]
+
+
+@router.get("/{document_id}/download")
+def download_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    document = db.get(Document, document_id)
+
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    allowed = document.owner_id == current_user.id
+
+    if not allowed:
+        permission = db.scalar(
+            select(DocumentPermission).where(
+                DocumentPermission.document_id == document_id,
+                DocumentPermission.user_id == current_user.id,
+            )
+        )
+        allowed = permission is not None and permission.can_read
+
+    if not allowed:
+        record_audit_event(
+            db,
+            actor_id=current_user.id,
+            action="document_download",
+            resource_type="document",
+            resource_id=str(document_id),
+            outcome="denied",
+            details="User does not have read permission",
+        )
+        db.commit()
+        raise HTTPException(status_code=403, detail="You do not have permission to download this document")
+
+    file_path = UPLOAD_DIR / document.stored_filename
+
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Stored file not found")
+
+    record_audit_event(
+        db,
+        actor_id=current_user.id,
+        action="document_download",
+        resource_type="document",
+        resource_id=str(document_id),
+        outcome="success",
+        details="Document download authorized",
+    )
+    db.commit()
+
+    return FileResponse(
+        path=file_path,
+        media_type=document.content_type,
+        filename=document.original_filename,
+    )
+
 
 @router.post("/{document_id}/share")
 def share_document(
@@ -253,64 +337,6 @@ def share_document(
         "can_read": can_read,
         "can_edit": request.can_edit,
     }
-
-
-@router.get("/{document_id}/download")
-def download_document(
-    document_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    document = db.get(Document, document_id)
-
-    if document is None:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    allowed = document.owner_id == current_user.id
-
-    if not allowed:
-        permission = db.scalar(
-            select(DocumentPermission).where(
-                DocumentPermission.document_id == document_id,
-                DocumentPermission.user_id == current_user.id,
-            )
-        )
-        allowed = permission is not None and permission.can_read
-
-    if not allowed:
-        record_audit_event(
-            db,
-            actor_id=current_user.id,
-            action="document_download",
-            resource_type="document",
-            resource_id=str(document_id),
-            outcome="denied",
-            details="User does not have read permission",
-        )
-        db.commit()
-        raise HTTPException(status_code=403, detail="You do not have permission to download this document")
-
-    file_path = UPLOAD_DIR / document.stored_filename
-
-    if not file_path.is_file():
-        raise HTTPException(status_code=404, detail="Stored file not found")
-
-    record_audit_event(
-        db,
-        actor_id=current_user.id,
-        action="document_download",
-        resource_type="document",
-        resource_id=str(document_id),
-        outcome="success",
-        details="Document download authorized",
-    )
-    db.commit()
-
-    return FileResponse(
-        path=file_path,
-        media_type=document.content_type,
-        filename=document.original_filename,
-    )
 
 
 @router.delete("/{document_id}/share/{user_id}")

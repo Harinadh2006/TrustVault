@@ -105,3 +105,38 @@ def test_non_owner_cannot_share_document(client):
     )
 
     assert response.status_code == 403
+
+def test_shared_document_appears_in_viewer_list(client):
+    owner_headers = create_user(client, "listowner@example.com")
+    viewer_headers = create_user(client, "listviewer@example.com")
+
+    document_id = upload_test_document(client, owner_headers)
+
+    # Before sharing, the viewer should not see the document.
+    before = client.get("/documents", headers=viewer_headers)
+    assert before.status_code == 200
+    assert all(item["id"] != document_id for item in before.json())
+
+    # Owner grants read access.
+    share = client.post(
+        f"/documents/{document_id}/share",
+        headers=owner_headers,
+        json={
+            "email": "listviewer@example.com",
+            "can_read": True,
+            "can_edit": False,
+        },
+    )
+    assert share.status_code == 200
+
+    # After sharing, the viewer should see it with read-only access.
+    after = client.get("/documents", headers=viewer_headers)
+    assert after.status_code == 200
+
+    shared = next(
+        item for item in after.json()
+        if item["id"] == document_id
+    )
+    assert shared["access"] == "shared"
+    assert shared["can_read"] is True
+    assert shared["can_edit"] is False
