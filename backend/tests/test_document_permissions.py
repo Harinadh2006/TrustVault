@@ -149,6 +149,7 @@ def test_document_with_no_read_permission_is_hidden_from_listing(client):
 
     # Create a permission record without read or edit access.
     share = client.post(
+
         f"/documents/{document_id}/share",
         headers=owner_headers,
         json={
@@ -172,3 +173,89 @@ def test_document_with_no_read_permission_is_hidden_from_listing(client):
         headers=viewer_headers,
     )
     assert download.status_code == 403
+
+def test_read_only_user_cannot_edit_document(client):
+    owner_headers = create_user(client, "editowner@example.com")
+    viewer_headers = create_user(client, "editviewer@example.com")
+    document_id = upload_test_document(client, owner_headers)
+
+    share = client.post(
+        f"/documents/{document_id}/share",
+        headers=owner_headers,
+        json={
+            "email": "editviewer@example.com",
+            "can_read": True,
+            "can_edit": False,
+        },
+    )
+    assert share.status_code == 200
+
+    response = client.patch(
+        f"/documents/{document_id}",
+        headers=viewer_headers,
+        json={"category": "Confidential"},
+    )
+    assert response.status_code == 403
+
+
+def test_editor_can_update_document_category(client):
+    owner_headers = create_user(client, "editorowner@example.com")
+    editor_headers = create_user(client, "editor@example.com")
+    document_id = upload_test_document(client, owner_headers)
+
+    share = client.post(
+        f"/documents/{document_id}/share",
+        headers=owner_headers,
+        json={
+            "email": "editor@example.com",
+            "can_read": True,
+            "can_edit": True,
+        },
+    )
+    assert share.status_code == 200
+
+    response = client.patch(
+        f"/documents/{document_id}",
+        headers=editor_headers,
+        json={"category": "Confidential"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["category"] == "Confidential"
+
+
+def test_denied_document_edit_is_audited(client):
+    from app.database import get_db
+    from app.main import app
+    from app.models import AuditLog
+
+    owner_headers = create_user(client, "auditowner@example.com")
+    viewer_headers = create_user(client, "auditviewer@example.com")
+    document_id = upload_test_document(client, owner_headers)
+
+    response = client.patch(
+        f"/documents/{document_id}",
+        headers=viewer_headers,
+        json={"category": "Restricted"},
+    )
+    assert response.status_code == 403
+
+    # Query the same temporary database used by the test client.
+    db_generator = app.dependency_overrides[get_db]()
+    db = next(db_generator)
+    try:
+        event = (
+            db.query(AuditLog)
+            .filter(
+                AuditLog.actor_id.is_not(None),
+                AuditLog.action == "document_edit",
+                AuditLog.resource_id == str(document_id),
+                AuditLog.outcome == "denied",
+            )
+            .first()
+        )
+        assert event is not None
+        assert event.actor_id is not None
+    finally:
+        db.close()
+        db_generator.close()

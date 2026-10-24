@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,10 @@ class ShareDocumentRequest(BaseModel):
     email: EmailStr
     can_read: bool = True
     can_edit: bool = False
+
+
+class UpdateDocumentRequest(BaseModel):
+    category: str = Field(min_length=1, max_length=100)
 
 UPLOAD_DIR = Path(__file__).resolve().parents[2] / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -204,6 +208,73 @@ def list_documents(
         }
         for doc, permission in documents
     ]
+
+
+@router.patch("/{document_id}")
+def update_document(
+    document_id: int,
+    request: UpdateDocumentRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    document = db.get(Document, document_id)
+
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    allowed = document.owner_id == current_user.id
+
+    if not allowed:
+        permission = db.scalar(
+            select(DocumentPermission).where(
+                DocumentPermission.document_id == document_id,
+                DocumentPermission.user_id == current_user.id,
+            )
+        )
+        allowed = permission is not None and permission.can_edit
+
+    if not allowed:
+        record_audit_event(
+            db,
+            actor_id=current_user.id,
+            action="document_edit",
+            resource_type="document",
+            resource_id=str(document_id),
+            outcome="denied",
+            details="User does not have edit permission",
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have permission to edit this document",
+        )
+
+    category = request.category.strip()
+    if not category:
+        raise HTTPException(
+            status_code=422,
+            detail="Category must not be blank",
+        )
+
+    document.category = category
+
+    record_audit_event(
+        db,
+        actor_id=current_user.id,
+        action="document_edit",
+        resource_type="document",
+        resource_id=str(document_id),
+        outcome="success",
+        details="Document category updated",
+    )
+    db.commit()
+    db.refresh(document)
+
+    return {
+        "id": document.id,
+        "category": document.category,
+        "updated_at": document.updated_at.isoformat(),
+    }
 
 
 @router.get("/{document_id}/download")
