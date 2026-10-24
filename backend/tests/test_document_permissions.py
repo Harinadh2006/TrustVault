@@ -140,3 +140,35 @@ def test_shared_document_appears_in_viewer_list(client):
     assert shared["access"] == "shared"
     assert shared["can_read"] is True
     assert shared["can_edit"] is False
+
+def test_document_with_no_read_permission_is_hidden_from_listing(client):
+    owner_headers = create_user(client, "hiddenowner@example.com")
+    viewer_headers = create_user(client, "hiddenviewer@example.com")
+
+    document_id = upload_test_document(client, owner_headers)
+
+    # Create a permission record without read or edit access.
+    share = client.post(
+        f"/documents/{document_id}/share",
+        headers=owner_headers,
+        json={
+            "email": "hiddenviewer@example.com",
+            "can_read": False,
+            "can_edit": False,
+        },
+    )
+    assert share.status_code == 200
+    assert share.json()["can_read"] is False
+    assert share.json()["can_edit"] is False
+
+    # A user without read permission must not see the document.
+    listing = client.get("/documents", headers=viewer_headers)
+    assert listing.status_code == 200
+    assert all(item["id"] != document_id for item in listing.json())
+
+    # Direct download must also be denied.
+    download = client.get(
+        f"/documents/{document_id}/download",
+        headers=viewer_headers,
+    )
+    assert download.status_code == 403

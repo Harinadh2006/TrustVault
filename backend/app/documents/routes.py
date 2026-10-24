@@ -153,8 +153,6 @@ async def upload_document(
 
 
 @router.get("")
-
-@router.get("")
 def list_documents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -171,7 +169,10 @@ def list_documents(
         .where(
             or_(
                 Document.owner_id == current_user.id,
-                DocumentPermission.user_id == current_user.id,
+                and_(
+                    DocumentPermission.user_id == current_user.id,
+                    DocumentPermission.can_read.is_(True),
+                ),
             )
         )
         .order_by(Document.created_at.desc())
@@ -190,7 +191,11 @@ def list_documents(
                 if doc.owner_id == current_user.id
                 else "shared"
             ),
-            "can_read": True,
+            "can_read": (
+                True
+                if doc.owner_id == current_user.id
+                else permission.can_read
+            ),
             "can_edit": (
                 True
                 if doc.owner_id == current_user.id
