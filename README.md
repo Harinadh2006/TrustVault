@@ -171,7 +171,7 @@ The current development test suite has passed 14 tests. Run the command again af
 
 ## Current Scope and Limitations
 
-The current implementation provides a backend API rather than a completed graphical frontend. Document editing currently updates metadata (the category), not the uploaded file's contents.
+The project includes a FastAPI backend and a React/Vite graphical frontend. The frontend supports login, document listing, upload, download, search, and navigation between owned and shared documents. Document editing currently updates metadata (the category), not the uploaded file's contents.
 
 Production hosting, deployment hardening, and any features not listed above must be verified separately before being represented as complete.
 
