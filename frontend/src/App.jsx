@@ -1,8 +1,12 @@
 
-import { useEffect, useState } from "react";
+
+import { useState } from "react";
 import "./App.css";
 
-const API = import.meta.env.VITE_API_URL || "https://trustvault-api-c20d.onrender.com";
+const API =
+  import.meta.env.VITE_API_URL ||
+  "https://trustvault-api-c20d.onrender.com";
+
 function formatSize(bytes = 0) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -16,7 +20,7 @@ async function readResponse(response) {
       const body = await response.json();
       message = body.detail || message;
     } catch {
-      // Keep the fallback message if the response isn't JSON.
+      // Keep the fallback message.
     }
     throw new Error(message);
   }
@@ -31,6 +35,12 @@ function App() {
   const [activeTab, setActiveTab] = useState("All Documents");
   const [search, setSearch] = useState("");
   const [showUpload, setShowUpload] = useState(false);
+
+  const [shareDocument, setShareDocument] = useState(null);
+  const [shareEmail, setShareEmail] = useState("");
+  const [shareCanEdit, setShareCanEdit] = useState(false);
+  const [sharing, setSharing] = useState(false);
+
   const [file, setFile] = useState(null);
   const [category, setCategory] = useState("General");
   const [email, setEmail] = useState("owner.demo@example.com");
@@ -60,6 +70,7 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
+
       const data = await readResponse(response);
 
       if (!data.access_token) {
@@ -80,7 +91,7 @@ function App() {
     } catch (err) {
       setError(
         err instanceof TypeError
-          ? "Cannot reach the backend. Check that FastAPI is running at 127.0.0.1:8000."
+          ? "Cannot reach the TrustVault backend."
           : err.message
       );
     } finally {
@@ -113,6 +124,7 @@ function App() {
     formData.append("file", file);
 
     setUploading(true);
+
     try {
       const response = await fetch(
         `${API}/documents/upload?category=${encodeURIComponent(category)}`,
@@ -124,7 +136,7 @@ function App() {
       );
 
       await readResponse(response);
-      await loadDocuments();
+      await loadDocuments(token);
 
       setFile(null);
       setCategory("General");
@@ -133,7 +145,7 @@ function App() {
     } catch (err) {
       setError(
         err instanceof TypeError
-          ? "Could not connect to the backend. Check that it is running."
+          ? "Could not connect to the backend."
           : err.message
       );
     } finally {
@@ -157,7 +169,7 @@ function App() {
           const body = await response.json();
           message = body.detail || message;
         } catch {
-          // Use the fallback message.
+          // Keep the fallback message.
         }
         throw new Error(message);
       }
@@ -165,12 +177,14 @@ function App() {
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
+
       link.href = objectUrl;
       link.download = doc.filename;
       document.body.appendChild(link);
       link.click();
       link.remove();
       URL.revokeObjectURL(objectUrl);
+
       setNotice(`Download started: ${doc.filename}`);
     } catch (err) {
       setError(
@@ -179,6 +193,59 @@ function App() {
           : err.message
       );
     }
+  }
+
+  async function shareDocumentWithUser(event) {
+    event.preventDefault();
+
+    if (!shareDocument || !shareEmail.trim() || sharing) return;
+
+    const recipient = shareEmail.trim();
+    setError("");
+    setNotice("");
+    setSharing(true);
+
+    try {
+      const response = await fetch(
+        `${API}/documents/${shareDocument.id}/share`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            email: recipient,
+            can_read: true,
+            can_edit: shareCanEdit,
+          }),
+        }
+      );
+
+      await readResponse(response);
+
+      setShareDocument(null);
+      setShareEmail("");
+      setShareCanEdit(false);
+      await loadDocuments(token);
+      setNotice(`Document shared with ${recipient}.`);
+    } catch (err) {
+      setError(
+        err instanceof TypeError
+          ? "Could not connect to the backend."
+          : err.message
+      );
+    } finally {
+      setSharing(false);
+    }
+  }
+
+  function openShareDialog(doc) {
+    setShareDocument(doc);
+    setShareEmail("");
+    setShareCanEdit(false);
+    setError("");
+    setNotice("");
   }
 
   function logout() {
@@ -191,11 +258,13 @@ function App() {
     setError("");
     setNotice("");
     setShowUpload(false);
+    setShareDocument(null);
   }
 
   const visibleDocuments = documents.filter((doc) => {
     const name = (doc.filename || "").toLowerCase();
     const matchesSearch = name.includes(search.toLowerCase());
+
     const matchesTab =
       activeTab === "All Documents" ||
       (activeTab === "Shared with me" && doc.access === "shared") ||
@@ -204,19 +273,19 @@ function App() {
     return matchesSearch && matchesTab;
   });
 
-  useEffect(() => {
-    // Authentication is intentionally held in component state for this MVP.
-    // Refreshing the page returns to the login screen.
-  }, []);
-
   if (!token || !user) {
     return (
       <div className="auth-screen">
         <form className="auth-card" onSubmit={login}>
-          <a className="brand auth-brand" href="#" onClick={(e) => e.preventDefault()}>
+          <a
+            className="brand auth-brand"
+            href="#"
+            onClick={(event) => event.preventDefault()}
+          >
             <span className="brand-icon">⬡</span>
             <span>Trust<span className="brand-light">Vault</span></span>
           </a>
+
           <div className="eyebrow">SECURE DOCUMENT WORKSPACE</div>
           <h1>Welcome back</h1>
           <p className="subtitle">
@@ -230,7 +299,7 @@ function App() {
             <input
               type="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(event) => setEmail(event.target.value)}
               autoComplete="username"
               required
             />
@@ -241,13 +310,17 @@ function App() {
             <input
               type="password"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(event) => setPassword(event.target.value)}
               autoComplete="current-password"
               required
             />
           </label>
 
-          <button className="primary-button auth-submit" type="submit" disabled={loading}>
+          <button
+            className="primary-button auth-submit"
+            type="submit"
+            disabled={loading}
+          >
             {loading ? "Connecting..." : "Sign in securely"}
           </button>
 
@@ -262,12 +335,17 @@ function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <a className="brand" href="#" onClick={(e) => e.preventDefault()}>
+        <a
+          className="brand"
+          href="#"
+          onClick={(event) => event.preventDefault()}
+        >
           <span className="brand-icon">⬡</span>
           <span>Trust<span className="brand-light">Vault</span></span>
         </a>
 
         <div className="workspace-label">WORKSPACE</div>
+
         <nav className="navigation">
           {[
             ["All Documents", "▤"],
@@ -291,22 +369,29 @@ function App() {
             <strong>Your files, protected.</strong>
             <p>Private by default. Shared with control.</p>
           </div>
+
           <div className="profile">
             <div className="avatar">
-              {(user.full_name || user.email || "TV").slice(0, 2).toUpperCase()}
+              {(user.full_name || user.email || "TV")
+                .slice(0, 2)
+                .toUpperCase()}
             </div>
             <div>
               <strong>{user.full_name || user.email}</strong>
               <small>{user.role || "Secure workspace"}</small>
             </div>
-            <button className="logout-button" onClick={logout}>Log out</button>
+            <button className="logout-button" onClick={logout}>
+              Log out
+            </button>
           </div>
         </div>
       </aside>
 
       <main className="main-content">
         <header className="topbar">
-          <div className="breadcrumb">Workspace <span>/</span> {activeTab}</div>
+          <div className="breadcrumb">
+            Workspace <span>/</span> {activeTab}
+          </div>
           <div className="security-status">
             <span className="status-dot" /> Connected to API
           </div>
@@ -321,7 +406,13 @@ function App() {
                 Keep your important files organized, private, and under your control.
               </p>
             </div>
-            <button className="primary-button" onClick={() => { setError(""); setShowUpload(true); }}>
+            <button
+              className="primary-button"
+              onClick={() => {
+                setError("");
+                setShowUpload(true);
+              }}
+            >
               <span>＋</span> Upload document
             </button>
           </div>
@@ -329,30 +420,53 @@ function App() {
           {error && (
             <div className="app-message error-message">
               {error}
-              <button onClick={() => setError("")} aria-label="Dismiss error">×</button>
+              <button onClick={() => setError("")} aria-label="Dismiss error">
+                ×
+              </button>
             </div>
           )}
+
           {notice && (
             <div className="app-message success-message">
               {notice}
-              <button onClick={() => setNotice("")} aria-label="Dismiss message">×</button>
+              <button
+                onClick={() => setNotice("")}
+                aria-label="Dismiss message"
+              >
+                ×
+              </button>
             </div>
           )}
 
           <div className="stats-grid">
             <div className="stat-card">
-              <div className="stat-top"><span>Total documents</span><span className="stat-icon blue">▤</span></div>
+              <div className="stat-top">
+                <span>Total documents</span>
+                <span className="stat-icon blue">▤</span>
+              </div>
               <strong>{documents.length}</strong>
               <small>Available to this account</small>
             </div>
+
             <div className="stat-card">
-              <div className="stat-top"><span>My documents</span><span className="stat-icon purple">▣</span></div>
-              <strong>{documents.filter((d) => d.access === "owner").length}</strong>
+              <div className="stat-top">
+                <span>My documents</span>
+                <span className="stat-icon purple">▣</span>
+              </div>
+              <strong>
+                {documents.filter((doc) => doc.access === "owner").length}
+              </strong>
               <small>Owned by you</small>
             </div>
+
             <div className="stat-card">
-              <div className="stat-top"><span>Shared documents</span><span className="stat-icon green">⇄</span></div>
-              <strong>{documents.filter((d) => d.access === "shared").length}</strong>
+              <div className="stat-top">
+                <span>Shared documents</span>
+                <span className="stat-icon green">⇄</span>
+              </div>
+              <strong>
+                {documents.filter((doc) => doc.access === "shared").length}
+              </strong>
               <small>Shared with this account</small>
             </div>
           </div>
@@ -363,16 +477,22 @@ function App() {
                 <h2>Documents</h2>
                 <p>Live data from your TrustVault backend</p>
               </div>
+
               <div className="document-controls">
                 <label className="search-box">
                   <span>⌕</span>
                   <input
                     value={search}
-                    onChange={(e) => setSearch(e.target.value)}
+                    onChange={(event) => setSearch(event.target.value)}
                     placeholder="Search documents..."
                   />
                 </label>
-                <button className="secondary-button" onClick={refreshDocuments}>Refresh</button>
+                <button
+                  className="secondary-button"
+                  onClick={refreshDocuments}
+                >
+                  Refresh
+                </button>
               </div>
             </div>
 
@@ -384,9 +504,10 @@ function App() {
                     <th>CATEGORY</th>
                     <th>SIZE</th>
                     <th>ACCESS</th>
-                    <th>ACTION</th>
+                    <th>ACTIONS</th>
                   </tr>
                 </thead>
+
                 <tbody>
                   {visibleDocuments.map((doc) => (
                     <tr key={doc.id}>
@@ -403,20 +524,48 @@ function App() {
                           </div>
                         </div>
                       </td>
-                      <td><span className="category-tag">{doc.category}</span></td>
-                      <td>{formatSize(doc.size_bytes)}</td>
+
                       <td>
-                        <span className={`access-tag ${doc.access === "owner" ? "owner" : "shared"}`}>
-                          <span />{doc.access === "owner" ? "Owner" : "Shared"}
+                        <span className="category-tag">{doc.category}</span>
+                      </td>
+
+                      <td>{formatSize(doc.size_bytes)}</td>
+
+                      <td>
+                        <span
+                          className={`access-tag ${
+                            doc.access === "owner" ? "owner" : "shared"
+                          }`}
+                        >
+                          <span />
+                          {doc.access === "owner" ? "Owner" : "Shared"}
                         </span>
                       </td>
+
                       <td>
-                        <button className="secondary-button" onClick={() => downloadDocument(doc)}>
-                          Download
-                        </button>
+                        <div className="document-actions">
+                          {doc.access === "owner" && (
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() => openShareDialog(doc)}
+                            >
+                              Share
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => downloadDocument(doc)}
+                          >
+                            Download
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
+
                   {visibleDocuments.length === 0 && (
                     <tr>
                       <td colSpan="5" className="empty-state">
@@ -434,7 +583,9 @@ function App() {
 
             <div className="table-footer">
               Showing {visibleDocuments.length} of {documents.length} documents
-              <span>Protected workspace <span className="footer-lock">♢</span></span>
+              <span>
+                Protected workspace <span className="footer-lock">♢</span>
+              </span>
             </div>
           </section>
 
@@ -449,8 +600,14 @@ function App() {
       </main>
 
       {showUpload && (
-        <div className="modal-backdrop" onClick={() => !uploading && setShowUpload(false)}>
-          <section className="upload-modal" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="modal-backdrop"
+          onClick={() => !uploading && setShowUpload(false)}
+        >
+          <section
+            className="upload-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="modal-heading">
               <div>
                 <h2>Upload a document</h2>
@@ -460,25 +617,34 @@ function App() {
                 className="close-button"
                 onClick={() => setShowUpload(false)}
                 disabled={uploading}
-              >×</button>
+              >
+                ×
+              </button>
             </div>
 
             <form onSubmit={uploadDocument}>
               <label className="upload-dropzone">
                 <span className="upload-cloud">↑</span>
-                <strong>{file ? file.name : "Choose a file to upload"}</strong>
+                <strong>
+                  {file ? file.name : "Choose a file to upload"}
+                </strong>
                 <small>PDF, TXT, PNG or JPEG · Maximum 5 MB</small>
                 <input
                   type="file"
                   accept=".pdf,.txt,.png,.jpg,.jpeg"
-                  onChange={(e) => setFile(e.target.files?.[0] || null)}
+                  onChange={(event) =>
+                    setFile(event.target.files?.[0] || null)
+                  }
                   required
                 />
               </label>
 
               <label className="field-label">
                 Category
-                <select value={category} onChange={(e) => setCategory(e.target.value)}>
+                <select
+                  value={category}
+                  onChange={(event) => setCategory(event.target.value)}
+                >
                   <option>General</option>
                   <option>Reports</option>
                   <option>Strategy</option>
@@ -493,9 +659,94 @@ function App() {
                   className="secondary-button"
                   onClick={() => setShowUpload(false)}
                   disabled={uploading}
-                >Cancel</button>
-                <button className="primary-button" type="submit" disabled={uploading || !file}>
+                >
+                  Cancel
+                </button>
+                <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={uploading || !file}
+                >
                   {uploading ? "Uploading..." : "Upload document"}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {shareDocument && (
+        <div
+          className="modal-backdrop"
+          onClick={() => !sharing && setShareDocument(null)}
+        >
+          <section
+            className="upload-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-heading">
+              <div>
+                <h2>Share document</h2>
+                <p>
+                  Share <strong>{shareDocument.filename}</strong> with another
+                  registered TrustVault user.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="close-button"
+                onClick={() => setShareDocument(null)}
+                disabled={sharing}
+                aria-label="Close share dialog"
+              >
+                ×
+              </button>
+            </div>
+
+            <form onSubmit={shareDocumentWithUser}>
+              <label className="field-label">
+                Recipient email
+                <input
+                  type="email"
+                  value={shareEmail}
+                  onChange={(event) => setShareEmail(event.target.value)}
+                  placeholder="viewer.demo@example.com"
+                  required
+                />
+              </label>
+
+              <label className="share-permission">
+                <input
+                  type="checkbox"
+                  checked={shareCanEdit}
+                  onChange={(event) =>
+                    setShareCanEdit(event.target.checked)
+                  }
+                />
+                <span>
+                  <strong>Allow editing</strong>
+                  <small>
+                    Grants read access as well. Leave unchecked for read-only
+                    access.
+                  </small>
+                </span>
+              </label>
+
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => setShareDocument(null)}
+                  disabled={sharing}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={sharing || !shareEmail.trim()}
+                >
+                  {sharing ? "Sharing..." : "Share document"}
                 </button>
               </div>
             </form>
